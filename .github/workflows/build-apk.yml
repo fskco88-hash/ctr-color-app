@@ -24,12 +24,17 @@ jobs:
           flutter-version: '3.22.2'
           channel: 'stable'
 
+      # ✅ Create project inside a subfolder (app/)
       - name: Create Flutter project (scaffold)
         run: |
           flutter --version
-          flutter create . --platforms=android --project-name ctr_color_app --org io.ctrcolor --overwrite
-          rm -f pubspec.yaml
-          cat > pubspec.yaml << 'YAML'
+          flutter create app --platforms=android --project-name ctr_color_app --org io.ctrcolor
+
+      # ✅ Write pubspec.yaml into app/
+      - name: Write pubspec.yaml
+        run: |
+          rm -f app/pubspec.yaml
+          cat > app/pubspec.yaml << 'YAML'
           name: ctr_color_app
           description: Excel -> color categories (red/gray/green) by CTR vs position benchmarks.
           publish_to: "none"
@@ -54,11 +59,12 @@ jobs:
             uses-material-design: true
           YAML
 
+      # ✅ Write main.dart into app/lib/
       - name: Write app source
         run: |
-          mkdir -p lib
-          rm -f lib/main.dart
-          cat > lib/main.dart << 'DART'
+          mkdir -p app/lib
+          rm -f app/lib/main.dart
+          cat > app/lib/main.dart << 'DART'
           // --- main.dart (CTR Color App) ---
           import 'dart:convert';
           import 'dart:typed_data';
@@ -83,10 +89,8 @@ jobs:
             }
           }
 
-          class PageRow {
-            final String text; final String ctrRaw; final String posRaw; final int rowIndex;
-            PageRow({required this.text, required this.ctrRaw, required this.posRaw, required this.rowIndex});
-          }
+          class PageRow { final String text; final String ctrRaw; final String posRaw; final int rowIndex;
+            PageRow({required this.text, required this.ctrRaw, required this.posRaw, required this.rowIndex}); }
           class Benchmark { final double fromPos,toPos,minCTR,maxCTR; Benchmark(this.fromPos,this.toPos,this.minCTR,this.maxCTR); }
           enum ColorClass { red, gray, green, warn }
           class ResultRow { final PageRow row; final ColorClass colorClass; final Benchmark? bm; ResultRow(this.row,this.colorClass,this.bm); }
@@ -243,13 +247,15 @@ jobs:
           DART
 
       - name: Flutter pub get
+        working-directory: app
         run: flutter pub get
 
       - name: Build APK (release)
+        working-directory: app
         run: flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
