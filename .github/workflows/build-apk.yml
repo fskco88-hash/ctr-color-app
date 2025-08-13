@@ -245,6 +245,25 @@ jobs:
           class ListToCsvConverter{ const ListToCsvConverter(); String convert(List<List<String>> rows){ final b=StringBuffer(); for(final r in rows){ b.writeln(r.map(_e).join(',')); } return b.toString(); }
             String _e(String s){ final n=s.contains(',')||s.contains('"')||s.contains('\n')||s.contains('\r'); if(!n) return s; final esc=s.replaceAll('"','""'); return '"$esc"'; } }
           DART
+      # Bump Kotlin plugin to 1.8.22 (fixes 1.7.10 vs 1.8.22 mismatch)
+      - name: Bump Kotlin plugin version
+        run: |
+          sed -i "s/id 'org.jetbrains.kotlin.android' version '[^']*'/id 'org.jetbrains.kotlin.android' version '1.8.22'/g" app/android/build.gradle
+
+      # Force kotlin-stdlib family to 1.8.22 to avoid duplicate class errors
+      - name: Force kotlin stdlib versions
+        run: |
+          cat >> app/android/app/build.gradle <<'GRADLE'
+
+          // --- force kotlin stdlib to a single version ---
+          configurations.all {
+              resolutionStrategy {
+                  force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
+                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'
+                  force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'
+              }
+          }
+          GRADLE
 
       - name: Flutter pub get
         working-directory: app
