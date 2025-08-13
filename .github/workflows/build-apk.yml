@@ -1,0 +1,255 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.2'
+          channel: 'stable'
+
+      - name: Create Flutter project (scaffold)
+        run: |
+          flutter --version
+          flutter create . --platforms=android --project-name ctr_color_app --org io.ctrcolor --overwrite
+          rm -f pubspec.yaml
+          cat > pubspec.yaml << 'YAML'
+          name: ctr_color_app
+          description: Excel -> color categories (red/gray/green) by CTR vs position benchmarks.
+          publish_to: "none"
+          version: 1.0.0+1
+
+          environment:
+            sdk: ">=3.3.0 <4.0.0"
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            file_picker: ^8.0.0
+            excel: ^2.1.0
+            share_plus: ^9.0.0
+            collection: ^1.18.0
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+
+          flutter:
+            uses-material-design: true
+          YAML
+
+      - name: Write app source
+        run: |
+          mkdir -p lib
+          rm -f lib/main.dart
+          cat > lib/main.dart << 'DART'
+          // --- main.dart (CTR Color App) ---
+          import 'dart:convert';
+          import 'dart:typed_data';
+
+          import 'package:collection/collection.dart';
+          import 'package:excel/excel.dart';
+          import 'package:file_picker/file_picker.dart';
+          import 'package:flutter/material.dart';
+          import 'package:share_plus/share_plus.dart';
+
+          void main() => runApp(const CTRColorApp());
+
+          class CTRColorApp extends StatelessWidget {
+            const CTRColorApp({super.key});
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'CTR Color App',
+                theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal), useMaterial3: true),
+                home: const HomeScreen(),
+              );
+            }
+          }
+
+          class PageRow {
+            final String text; final String ctrRaw; final String posRaw; final int rowIndex;
+            PageRow({required this.text, required this.ctrRaw, required this.posRaw, required this.rowIndex});
+          }
+          class Benchmark { final double fromPos,toPos,minCTR,maxCTR; Benchmark(this.fromPos,this.toPos,this.minCTR,this.maxCTR); }
+          enum ColorClass { red, gray, green, warn }
+          class ResultRow { final PageRow row; final ColorClass colorClass; final Benchmark? bm; ResultRow(this.row,this.colorClass,this.bm); }
+
+          class HomeScreen extends StatefulWidget { const HomeScreen({super.key}); @override State<HomeScreen> createState()=>_HomeScreenState(); }
+          class _HomeScreenState extends State<HomeScreen>{
+            Excel? _excel; String? _dataSheetName; List<String> _headers=[]; List<List<String>> _table=[];
+            int? _colText,_colCTR,_colPos; List<Benchmark> _benchmarks=[]; bool _bmFromSheet=false; List<ResultRow> _results=[];
+
+            String _normDigits(String s){ const m={'۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9','٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'}; var o=s; m.forEach((k,v)=>o=o.replaceAll(k,v)); return o; }
+            double _num(String v){ try{ var s=_normDigits(v.trim()).replaceAll(',', '').replaceAll('٬','').replaceAll('،','').replaceAll('٫','.'); return double.parse(s);}catch(_){return double.nan;} }
+            double _ctr(String v){ var s=_normDigits(v).trim(); var hasPct=s.contains('%')||s.contains('٪'); s=s.replaceAll('%','').replaceAll('٪',''); var x=_num(s); if(x.isNaN) return double.nan; if(hasPct) return x/100; if(x>1) return x/100; return x; }
+
+            Future<void> _pickExcel() async{
+              setState(()=>{_excel=null,_headers=[],_table=[],_colText=null,_colCTR=null,_colPos=null,_benchmarks=[],_bmFromSheet=false,_results=[]});
+              final res=await FilePicker.platform.pickFiles(type:FileType.custom,allowedExtensions:['xlsx'],withData:true);
+              if(res==null||res.files.isEmpty) return;
+              final bytes=res.files.single.bytes; if(bytes==null){_snack('Failed to read file bytes'); return;}
+              final excel=Excel.decodeBytes(bytes); setState(()=>_excel=excel);
+              final names=excel.tables.keys.toList(); final chosen=names.firstWhere((t)=>(excel.tables[t]?.maxRows??0)>0,orElse:()=>names.isNotEmpty?names.first:'');
+              if(chosen.isEmpty){_snack('No sheets found'); return;} _dataSheetName=chosen;
+              _loadTable(); _loadBenchmarks(excel); _autoMap();
+            }
+
+            void _loadTable(){ final sh=_excel!.tables[_dataSheetName]!; _headers=[]; _table=[];
+              for(var r=0;r<sh.maxRows;r++){ final row=<String>[]; for(var c=0;c<sh.maxCols;c++){ row.add('${sh.cell(CellIndex.indexByColumnRow(columnIndex:c,rowIndex:r)).value??''}'.trim()); }
+                if(r==0) _headers=row; else _table.add(row);
+              } }
+
+            void _loadBenchmarks(Excel excel){
+              _bmFromSheet=false; final bm=excel.tables['Benchmarks'];
+              if(bm==null||bm.maxRows<2){ _benchmarks=[
+                Benchmark(1,1,0.266,0.276), Benchmark(2,2,0.148,0.158), Benchmark(3,3,0.100,0.110),
+                Benchmark(4,4,0.074,0.084), Benchmark(5,5,0.053,0.063), Benchmark(6,6,0.039,0.049),
+                Benchmark(7,7,0.029,0.039), Benchmark(8,8,0.023,0.033), Benchmark(9,9,0.017,0.027),
+                Benchmark(10,10,0.014,0.024),
+              ]; return; }
+              final rows=bm.maxRows, cols=bm.maxCols; final list=<Benchmark>[];
+              for(var r=1;r<rows;r++){
+                String a='',b='',c='',d=''; if(cols>0)a='${bm.cell(CellIndex.indexByColumnRow(columnIndex:0,rowIndex:r)).value??''}';
+                if(cols>1)b='${bm.cell(CellIndex.indexByColumnRow(columnIndex:1,rowIndex:r)).value??''}';
+                if(cols>2)c='${bm.cell(CellIndex.indexByColumnRow(columnIndex:2,rowIndex:r)).value??''}';
+                if(cols>3)d='${bm.cell(CellIndex.indexByColumnRow(columnIndex:3,rowIndex:r)).value??''}';
+                final fp=_num(a), tp=_num(b), mn=_ctr(c), mx=_ctr(d); if(fp.isNaN||tp.isNaN||mn.isNaN||mx.isNaN) continue;
+                list.add(Benchmark(fp,tp,mn,mx));
+              }
+              if(list.isNotEmpty){ _benchmarks=list; _bmFromSheet=true; }
+            }
+
+            void _autoMap(){
+              int? find(List<String> keys){ for(var i=0;i<_headers.length;i++){ final h=_headers[i].toLowerCase(); for(final k in keys){ if(h.contains(k)) return i; } } return null; }
+              _colText = find(['url','address','page','landing','slug','title']) ?? 0;
+              _colCTR  = find(['ctr','click-through','clickthrough']) ?? (_headers.length>1?1:null);
+              _colPos  = find(['position','avg position','rank']) ?? (_headers.length>2?2:null);
+              setState((){});
+            }
+
+            void _compute(){
+              if(_colText==null||_colCTR==null||_colPos==null){ _snack('Map all three columns.'); return; }
+              final out=<ResultRow>[];
+              for(var i=0;i<_table.length;i++){
+                final row=_table[i]; if(_colText!>=row.length||_colCTR!>=row.length||_colPos!>=row.length) continue;
+                final text=row[_colText!], cRaw=row[_colCTR!], pRaw=row[_colPos!];
+                final c=_ctr(cRaw), p=_num(pRaw);
+                if(c.isNaN||p.isNaN){ out.add(ResultRow(PageRow(text:text,ctrRaw:cRaw,posRaw:pRaw,rowIndex:i+1),ColorClass.warn,null)); continue; }
+                final bm=_benchmarks.firstWhereOrNull((b)=>p>=b.fromPos&&p<=b.toPos);
+                if(bm==null){ out.add(ResultRow(PageRow(text:text,ctrRaw:cRaw,posRaw:pRaw,rowIndex:i+1),ColorClass.warn,null)); continue; }
+                final cls = c<bm.minCTR ? ColorClass.red : (c<=bm.maxCTR ? ColorClass.gray : ColorClass.green);
+                out.add(ResultRow(PageRow(text:text,ctrRaw:cRaw,posRaw:pRaw,rowIndex:i+1),cls,bm));
+              }
+              setState(()=>_results=out);
+            }
+
+            Future<void> _exportCSV() async{
+              if(_results.isEmpty){ _snack('No results to export.'); return; }
+              final lines=<List<String>>[]..add(['Text','CTR','Position','Class']);
+              for(final r in _results){
+                final cls = {ColorClass.red:'RED', ColorClass.gray:'GRAY', ColorClass.green:'GREEN', ColorClass.warn:'WARN'}[r.colorClass]!;
+                lines.add([r.row.text, r.row.ctrRaw, r.row.posRaw, cls]);
+              }
+              final csv = const ListToCsvConverter().convert(lines);
+              final data = utf8.encode(csv);
+              await Share.shareXFiles([XFile.fromData(Uint8List.fromList(data), name:'ctr_color_results.csv', mimeType:'text/csv')], text:'CTR color results');
+            }
+
+            void _snack(String m)=>ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+
+            @override Widget build(BuildContext context){
+              final red=_results.where((r)=>r.colorClass==ColorClass.red).length;
+              final gray=_results.where((r)=>r.colorClass==ColorClass.gray).length;
+              final green=_results.where((r)=>r.colorClass==ColorClass.green).length;
+              final warn=_results.where((r)=>r.colorClass==ColorClass.warn).length;
+              return Scaffold(
+                appBar: AppBar(title: const Text('CTR Color App')),
+                body: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: ListView(children:[
+                    ElevatedButton.icon(onPressed:_pickExcel,icon:const Icon(Icons.upload_file),label:const Text('Import Excel (.xlsx)')),
+                    const SizedBox(height:12),
+                    if(_headers.isNotEmpty) Text('Data sheet: ${_dataSheetName ?? "-"}'),
+                    if(_headers.isNotEmpty) const SizedBox(height:8),
+                    if(_headers.isNotEmpty) Wrap(spacing:12,runSpacing:12,children:[
+                      _picker('Text column', _colText, (v)=>setState(()=>_colText=v)),
+                      _picker('CTR column',  _colCTR,  (v)=>setState(()=>_colCTR=v)),
+                      _picker('Position column', _colPos, (v)=>setState(()=>_colPos=v)),
+                    ]),
+                    if(_headers.isNotEmpty) const SizedBox(height:8),
+                    if(_headers.isNotEmpty) Row(children:[
+                      ElevatedButton.icon(onPressed:_compute,icon:const Icon(Icons.color_lens),label:const Text('Compute Colors')),
+                      const SizedBox(width:12),
+                      OutlinedButton.icon(onPressed:_exportCSV,icon:const Icon(Icons.ios_share),label:const Text('Export CSV')),
+                    ]),
+                    const SizedBox(height:16),
+                    if(_benchmarks.isNotEmpty) Card(child:Padding(padding:const EdgeInsets.all(12),child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+                      Text('Benchmarks ${_bmFromSheet ? "(from sheet)" : "(default)"}',style:Theme.of(context).textTheme.titleMedium),
+                      const SizedBox(height:8),
+                      SingleChildScrollView(scrollDirection:Axis.horizontal,child:DataTable(columns:const[
+                        DataColumn(label:Text('FromPos')),DataColumn(label:Text('ToPos')),DataColumn(label:Text('MinCTR')),DataColumn(label:Text('MaxCTR')),
+                      ],rows:_benchmarks.map((b)=>DataRow(cells:[
+                        DataCell(Text(b.fromPos.toString())),DataCell(Text(b.toPos.toString())),
+                        DataCell(Text((b.minCTR*100).toStringAsFixed(2)+'%')),DataCell(Text((b.maxCTR*100).toStringAsFixed(2)+'%')),
+                      ])).toList()))
+                    ]))),
+                    const SizedBox(height:12),
+                    if(_results.isNotEmpty) Row(children:[
+                      _chip('Red',red,Colors.red), const SizedBox(width:8),
+                      _chip('Gray',gray,Colors.grey), const SizedBox(width:8),
+                      _chip('Green',green,const Color(0xFF00B050)), const SizedBox(width:8),
+                      _chip('Warn',warn,const Color(0xFFFFEBA0)),
+                    ]),
+                    const SizedBox(height:8),
+                    if(_results.isNotEmpty) ListView.builder(shrinkWrap:true,physics:const NeverScrollableScrollPhysics(),itemCount:_results.length,itemBuilder:(ctx,i){
+                      final r=_results[i];
+                      final bg = switch(r.colorClass){ ColorClass.red=>Colors.red.shade100, ColorClass.gray=>Colors.grey.shade300, ColorClass.green=>const Color(0xFFB7E4C7), ColorClass.warn=>const Color(0xFFFFEBA0) };
+                      return Card(color:bg,child:ListTile(dense:true,title:Text(r.row.text,maxLines:2,overflow:TextOverflow.ellipsis),subtitle:Text('CTR: ${r.row.ctrRaw}   |   Position: ${r.row.posRaw}')));
+                    }),
+                  ]),
+                ),
+              );
+            }
+
+            Widget _picker(String label,int? value,void Function(int?) onChanged)=>Row(mainAxisSize:MainAxisSize.min,children:[
+              Text('$label: '), const SizedBox(width:8),
+              DropdownButton<int>(value:value,hint:const Text('Select'),items:[
+                for(var i=0;i<_headers.length;i++) DropdownMenuItem(value:i,child:Text('${String.fromCharCode(65+i)}: ${_headers[i].isEmpty?"(blank)":_headers[i]}')),
+              ],onChanged:onChanged),
+            ]);
+
+            Widget _chip(String label,int count,Color c)=>Chip(label:Text('$label: $count'),backgroundColor:c.withOpacity(0.2),side:BorderSide(color:c.withOpacity(0.6)));
+          }
+
+          class ListToCsvConverter{ const ListToCsvConverter(); String convert(List<List<String>> rows){ final b=StringBuffer(); for(final r in rows){ b.writeln(r.map(_e).join(',')); } return b.toString(); }
+            String _e(String s){ final n=s.contains(',')||s.contains('"')||s.contains('\n')||s.contains('\r'); if(!n) return s; final esc=s.replaceAll('"','""'); return '"$esc"'; } }
+          DART
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build APK (release)
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
